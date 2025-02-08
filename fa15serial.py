@@ -327,17 +327,17 @@ def generate_10_byte_string():
     serial_data = fs_data[:]
     serial_data.append(checksum)
 
-    return serial_data.hex()
+    return serial_data
 
+# Send formatted data over serial or print for debugging
 def send_favero_data(ser):
-    """Send formatted data over serial or print for debugging."""
     while True:
         byte_string = generate_10_byte_string()
         if ser:
             ser.write(byte_string)
-            print(f"Sent: {byte_string}")
+            print(f"Sent: {byte_string.hex()}")
         else:
-            print(f"Debug Output: {byte_string}")
+            print(f"Debug Output: {byte_string.hex()}")
         time.sleep(1)
 
 def list_com_ports():
