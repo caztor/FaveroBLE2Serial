@@ -37,17 +37,23 @@ TIME_PHASES = {
 }
 
 # Global variables to store hex value of data to be transmitted via serial interface
-fs_rscore = 0x00  # Right score
-fs_lscore = 0x00  # Left score
-fs_stime = 0x00  # Seconds of the time (units and tens)
-fs_mtime = 0x00  # Minutes of the time (only units)
-fs_lamps = 0x00  # Define the state of the lamps (red, green, whites, and yellows)
-fs_matches = 0x00  # Number of matches and Priorite signals
-fs_cards = 0x00  # Red and Yellow penalty cards
+fs_stime = 0  # Seconds of the time (units and tens)
+fs_mtime = 0  # Minutes of the time (only units)
+fs_lamps = 0  # Define the state of the lamps (red, green, whites, and yellows)
+fs_period = 0  # Number of matches and Priorite signals
+fs_cards = 0  # Red and Yellow penalty cards
+fs_data = bytearray(9)  # Initialize the serial data to send
+
+# Convert an integer (0-99) to a BCD-encoded bytearray
+def int_to_bcd(value: int) -> str:
+    if not (0 <= value <= 99):  # BCD only supports two-digit numbers (0-99)
+        raise ValueError("Input must be between 0 and 99")
+
+    return (value // 10 << 4) | (value % 10)  # Convert to BCD and return the result
 
 # Score interpretation
 def interpret_scores(data: bytearray, name: str) -> int:
-    global fs_lscore, fs_rscore
+    global fs_data
     
     # Debugging: Log the raw input received
     logging.info(f"Received input - data: {repr(data)}, name: {repr(name)}")
@@ -60,39 +66,51 @@ def interpret_scores(data: bytearray, name: str) -> int:
     score = data[0]  # Extract score value
     
     if name == "leftScore":
-        fs_lscore = score  # Update left score global variable
-        logging.info(f"Updated fs_lscore: {hex(fs_lscore)}")
+        fs_data[2] = int_to_bcd(score)  # Update left score global variable
+        logging.info(f"Updated fs_data[2]: {score}")
     elif name == "rightScore":
-        fs_rscore = score  # Update right score global variable
-        logging.info(f"Updated fs_rscore: {hex(fs_rscore)}")
+        fs_data[1] = int_to_bcd(score)  # Update left score global variable
+        logging.info(f"Updated fs_data[1]: {score}")
     else:
         logging.error(f"Invalid name parameter. Received: {repr(name)}")
         raise ValueError("Invalid name. Must be 'leftScore' or 'rightScore'.")
     
     # Debugging: Log updated scores
-    logging.info(f"Updated {name}: {score} (Hex: {hex(score)})")
+    logging.info(f"Updated {name}: {score}")
 
     return score
 
 # Period interpretation
-def interpret_period(data):
-    if len(data) < 1:
+def interpret_period(data: bytearray) -> str:
+    global fs_period
+    
+    if not isinstance(data, bytearray) or len(data) != 1:
+        logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
         return "Invalid Period Data"
-
+    
     period_number = data[0]
-
+    fs_period = period_number  # Update global variable with hex value
+    
+    # Extract match number and priority signals
+    num_matches = period_number & 0x03  # D0 and D1 define the number of matches
+    
+    # Interpret the period/match value
     if period_number == 0x00:
-        return "No Period/Match '-'"
+        period_status = "No Period/Match '-'"
     elif 0x01 <= period_number <= 0x09:
-        return f"Period/Match No {period_number}"
+        period_status = f"Period/Match No {num_matches}"
     elif period_number == 0x0A:
-        return "Error"
+        period_status = "Error"
     else:
-        return f"Unknown Period Value ({period_number})"
+        period_status = f"Unknown Period Value ({period_number})"
+      
+    logging.info(f"Updated fs_period: {hex(fs_period)}")
+    
+    return f"{period_status} ({priority_output})"
 
 # Time interpretation
 def interpret_time(data: bytearray) -> str:
-    global fs_stime, fs_mtime
+    global fs_data
     
     if not isinstance(data, bytearray) or len(data) != 4:
         logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
@@ -104,8 +122,8 @@ def interpret_time(data: bytearray) -> str:
     phase_byte = data[3]  # Phase information
     
     # Update global time variables
-    fs_stime = seconds  # Store full seconds byte (units and tens)
-    fs_mtime = minutes & 0x0F  # Store only the unit digit of minutes
+    fs_data[3] = int_to_bcd(seconds)  # Store full seconds byte (units and tens)
+    fs_data[4] = int_to_bcd(minutes)  # Store only the unit digit of minutes
     
     # Interpret phase using last byte
     phase_status = TIME_PHASES.get(phase_byte, f"Unknown Phase ({phase_byte})")
@@ -145,20 +163,20 @@ def interpret_lamps(data: bytearray) -> str:
         raise ValueError(f"Invalid input data. Must be a bytearray of length 2, received: {repr(data)}")
     
     # Reset fs_lamps before updating
-    fs_lamps = 0x00
+    fs_data[5] = 0x00
     
     if data[0] & 0x04:
-        fs_lamps |= 0x01  # Left White Lamp
+        fs_data[5] |= 0x01  # Left White Lamp
     if data[1] & 0x01:
-        fs_lamps |= 0x02  # Right White Lamp
+        fs_data[5] |= 0x02  # Right White Lamp
     if data[0] & 0x01:
-        fs_lamps |= 0x04  # Red Lamp (Left Point)
+        fs_data[5] |= 0x04  # Red Lamp (Left Point)
     if data[0] & 0x40:
-        fs_lamps |= 0x08  # Green Lamp (Right Point)
+        fs_data[5] |= 0x08  # Green Lamp (Right Point)
     if data[1] & 0x04:
-        fs_lamps |= 0x10  # Right Yellow Lamp
+        fs_data[5] |= 0x10  # Right Yellow Lamp
     if data[0] & 0x10:
-        fs_lamps |= 0x20  # Left Yellow Lamp
+        fs_data[5] |= 0x20  # Left Yellow Lamp
     
     logging.info(f"Updated fs_lamps: {hex(fs_lamps)}")
     
@@ -172,64 +190,60 @@ def interpret_lamps(data: bytearray) -> str:
     )
 
 # Cards interpretation (Left & Right)
-def interpret_cards(data: bytearray, name: str) -> str:
-    global fs_cards
+def interpret_cards(data: bytearray, name: str, fs_cards: int, fs_period: int) -> tuple[str, int, int]:
+    """Interpret fencing cards and priority from a bytearray and update fs_cards and fs_period."""
 
     # Debugging: Log the raw input received
     logging.info(f"Received input - data: {repr(data)}, name: {repr(name)}")
-    
-    # Ensure data is a valid bytearray with length 2
+
+    # Validate 'name' early
+    if name not in {"leftCards", "rightCards"}:
+        logging.error(f"Invalid name parameter: {repr(name)}")
+        raise ValueError("Invalid name. Must be 'leftCards' or 'rightCards'.")
+
+    # Ensure data is a valid bytearray of length 2
     if not isinstance(data, bytearray) or len(data) != 2:
-        logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
-        raise ValueError(f"Invalid input data. Must be a bytearray of length 2, received: {repr(data)}")
-    
-    # Extract components based on byte values
-    red_card = bool(data[0] & 0x10)   # Red Card (Bit 4 of first byte)
-    p_card = (data[0] & 0x03)         # P-Card (Bits 0-1 of first byte)
-    yellow_card = bool(data[1] & 0x01) # Yellow Card (Bit 0 of second byte)
-    
+        logging.error(f"Invalid input data: {repr(data)} (Type: {type(data)})")
+        raise ValueError("Invalid input data. Must be a bytearray of length 2.")
+
+    # Extract components
+    red_card = bool(data[0] & 0x10)   # Bit 4 of first byte
+    p_card = data[0] & 0x03           # Bits 0-1 of first byte
+    yellow_card = bool(data[1] & 0x01) # Bit 0 of second byte
+
+    # Extract Priority
+    right_priority = bool(data[1] & 0x04)  # D2
+    left_priority = bool(data[1] & 0x08)   # D3
+
     # Debugging: Log extracted values
     logging.info(f"Extracted - Red: {red_card}, P-Card: {p_card}, Yellow: {yellow_card}")
-    
-    # Determine the textual representation
-    red_status = "ON" if red_card else "OFF"
-    yellow_status = "ON" if yellow_card else "OFF"
-    p_card_status = "OFF" if p_card == 0 else f"{p_card}st" if p_card == 1 else f"{p_card}nd" if p_card == 2 else "3rd"
-    
-    # Debugging: Log status representation
-    logging.info(f"Status - Yellow: {yellow_status}, Red: {red_status}, P-Card: {p_card_status}")
+    logging.info(f"Extracted - Matches: {num_matches}, Right Priority: {right_priority}, Left Priority: {left_priority}")
 
-    # Update global fs_cards using bitwise logic
+    # Status representation
+    p_card_mapping = {0: "OFF", 1: "1st", 2: "2nd", 3: "3rd"}
+    p_card_status = p_card_mapping.get(p_card, "OFF")
+    
+    yellow_status = "ON" if yellow_card else "OFF"
+    red_status = "ON" if red_card else "OFF"
+
+    priority_status = f"Right: {'ON' if right_priority else 'OFF'}, Left: {'ON' if left_priority else 'OFF'}"
+
+    # Update fs_cards (Penalties)
     if name == "leftCards":
-        if red_card:
-            fs_cards |= 0x02  # Set D1 (Left Red Penalty)
-        else:
-            fs_cards &= ~0x02  # Clear D1
-        
-        if yellow_card:
-            fs_cards |= 0x08  # Set D3 (Left Yellow Penalty)
-        else:
-            fs_cards &= ~0x08  # Clear D3
-    
-    elif name == "rightCards":
-        if red_card:
-            fs_cards |= 0x01  # Set D0 (Right Red Penalty)
-        else:
-            fs_cards &= ~0x01  # Clear D0
-        
-        if yellow_card:
-            fs_cards |= 0x04  # Set D2 (Right Yellow Penalty)
-        else:
-            fs_cards &= ~0x04  # Clear D2
-    
-    else:
-        logging.error(f"Invalid name parameter. Received: {repr(name)}")
-        raise ValueError("Invalid name. Must be 'leftCards' or 'rightCards'.")
-    
-    # Debugging: Log updated fs_cards value
-    logging.info(f"Updated fs_cards: {hex(fs_cards)}")
-    
-    return f"Yellow: {yellow_status} / Red: {red_status} / P-Card: {p_card_status}"
+        fs_cards = (fs_cards | 0x02) if red_card else (fs_cards & ~0x02)
+        fs_cards = (fs_cards | 0x08) if yellow_card else (fs_cards & ~0x08)
+    else:  # name == "rightCards"
+        fs_cards = (fs_cards | 0x01) if red_card else (fs_cards & ~0x01)
+        fs_cards = (fs_cards | 0x04) if yellow_card else (fs_cards & ~0x04)
+
+    # Update fs_period (Number of Matches and Priority Signals)
+    fs_period = (fs_period | 0x04) if right_priority else (fs_period & ~0x04)  # Right Priority
+    fs_period = (fs_period | 0x08) if left_priority else (fs_period & ~0x08)   # Left Priority
+
+    # Debugging: Log updated values
+    logging.info(f"Updated fs_cards: {hex(fs_cards)}, Updated fs_period: {hex(fs_period)}")
+
+    return f"Yellow: {yellow_status} / Red: {red_status} / P-Card: {p_card_status} / Priority: {priority_status}", fs_cards, fs_period
 
 # General BLE Notification Handler
 async def handle_notification(sender, data):
@@ -250,7 +264,7 @@ async def handle_notification(sender, data):
     elif characteristic_name in ["leftScore", "rightScore"]:
         readable_data = interpret_scores(data, characteristic_name)
     elif characteristic_name in ["leftCards", "rightCards"]:
-        readable_data = interpret_cards(data, characteristic_name)
+        readable_data = interpret_cards(data, characteristic_name, fs_cards, fs_period)
     elif characteristic_name == "period":
         readable_data = interpret_period(data)
     elif characteristic_name == "weapon":
@@ -272,7 +286,7 @@ async def read_initial_values(client):
                 interpret_time(data) if name == "time" else
                 interpret_lamps(data) if name == "lamp" else
                 interpret_scores(data, name) if name in ["leftScore", "rightScore"] else
-                interpret_cards(data, name) if name in ["leftCards", "rightCards"] else
+                interpret_cards(data, name, fs_cards, fs_period) if name in ["leftCards", "rightCards"] else
                 interpret_period(data) if name == "period" else
                 interpret_weapons(data) if name == "weapon" else
                 data.hex()
@@ -299,26 +313,21 @@ async def subscribe_to_fa15(device_address):
         while True:
             await asyncio.sleep(1)
 
+# Generate a 10-byte string mimicking the real serial data format, including checksum
 def generate_10_byte_string():
-    """Generate a 10-byte string mimicking the real serial data format, including checksum."""
-    global fs_rscore, fs_lscore, fs_stime, fs_mtime, fs_lamps, fs_matches, fs_cards
+    global fs_data
 
-    byte_data = [
-        0xFF,
-        fs_rscore,
-        fs_lscore,
-        fs_stime,  # Seconds
-        fs_mtime,  # Minutes
-        fs_lamps,
-        fs_matches,
-        0x00,  # Reserved byte
-        fs_cards
-    ]
+    fs_data[0] = 255 % 256  # Data Constant
+    # fs_data[5] = fs_ % 256  # Lamps
+    # fs_data[6] = fs_ % 256  # Period
+    fs_data[7] = 0 % 256  # Reserved byte
+    # fs_data[8] = fs_ % 256  # Cards
 
-    checksum = sum(byte_data) % 256
-    byte_data.append(checksum)
+    checksum = sum(fs_data) % 256
+    serial_data = fs_data[:]
+    serial_data.append(checksum)
 
-    return bytes(byte_data)
+    return serial_data.hex()
 
 def send_favero_data(ser):
     """Send formatted data over serial or print for debugging."""
@@ -326,9 +335,9 @@ def send_favero_data(ser):
         byte_string = generate_10_byte_string()
         if ser:
             ser.write(byte_string)
-            print(f"Sent: {byte_string.hex().upper()}")
+            print(f"Sent: {byte_string}")
         else:
-            print(f"Debug Output: {byte_string.hex().upper()}")
+            print(f"Debug Output: {byte_string}")
         time.sleep(1)
 
 def list_com_ports():
