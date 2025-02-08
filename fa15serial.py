@@ -34,9 +34,6 @@ TIME_PHASES = {
 }
 
 # Global variable to store hex value of data to be transmitted via serial interface
-
-fs_period = 0  # Number of matches and Priorite signals
-fs_cards = 0  # Red and Yellow penalty cards
 fs_data = bytearray(10)  # Initialize the serial data to send
 fs_data[0] = 255  # Data Constant
 
@@ -85,9 +82,12 @@ def interpret_period(data: bytearray) -> str:
         return "Invalid Period Data"
     
     period_number = data[0]
+    period_number_serial = period_number & 0x03  # Keep values to 0-3
     
-    # Extract match number and priority signals
-    fs_data[6] = period_number & 0x03  # D0 and D1 define the number of matches
+    fs_data[6] &= ~(0b00000011)  # Clears only the first two bits (without affecting others)
+
+    # Set bits based on period_number (0-3)
+    fs_data[6] |= (period_number & 0b00000011)  # Ensures only valid bits are set
     
     # Interpret the period/match value
     if period_number == 0x00:
@@ -99,7 +99,7 @@ def interpret_period(data: bytearray) -> str:
     else:
         period_status = f"Unknown Period Value ({period_number})"
       
-    logging.info(f"Updated fs_data[6]: {hex(fs_data[6])}")
+    logging.info(f"Updated fs_data[6]: 0x{fs_data[6]:02X} (binary: {bin(fs_data[6])})")
     
     return f"{period_status}"
 
@@ -185,6 +185,7 @@ def interpret_lamps(data: bytearray) -> str:
 
 # Interpret fencing cards and priority from a bytearray and update fs_data
 def interpret_cards(data: bytearray, name: str) -> int:
+    global fs_data
 
     # Debugging: Log the raw input received
     logging.info(f"Received input - data: {repr(data)}, name: {repr(name)}")
@@ -199,18 +200,16 @@ def interpret_cards(data: bytearray, name: str) -> int:
         logging.error(f"Invalid input data: {repr(data)} (Type: {type(data)})")
         raise ValueError("Invalid input data. Must be a bytearray of length 2.")
 
-    # Extract components
+    # Extract Cards
     red_card = bool(data[0] & 0x10)   # Bit 4 of first byte
     p_card = data[0] & 0x03           # Bits 0-1 of first byte
     yellow_card = bool(data[1] & 0x01) # Bit 0 of second byte
 
     # Extract Priority
-    right_priority = bool(data[1] & 0x04)  # D2
-    left_priority = bool(data[1] & 0x08)   # D3
+    priority = bool(data[1] & 0x04)
 
     # Debugging: Log extracted values
-    logging.info(f"Extracted - Red: {red_card}, P-Card: {p_card}, Yellow: {yellow_card}")
-    logging.info(f"Extracted - Matches: {num_matches}, Right Priority: {right_priority}, Left Priority: {left_priority}")
+    logging.info(f"Extracted - Red: {red_card}, P-Card: {p_card}, Yellow: {yellow_card}, Priority: {priority}")
 
     # Status representation
     p_card_mapping = {0: "OFF", 1: "1st", 2: "2nd", 3: "3rd"}
@@ -219,24 +218,22 @@ def interpret_cards(data: bytearray, name: str) -> int:
     yellow_status = "ON" if yellow_card else "OFF"
     red_status = "ON" if red_card else "OFF"
 
-    priority_status = f"Right: {'ON' if right_priority else 'OFF'}, Left: {'ON' if left_priority else 'OFF'}"
+    priority_status = "ON" if priority else "OFF"
 
-    # Update fs_cards (Penalties)
+    # Update Penalties
     if name == "leftCards":
-        fs_cards = (fs_cards | 0x02) if red_card else (fs_cards & ~0x02)
-        fs_cards = (fs_cards | 0x08) if yellow_card else (fs_cards & ~0x08)
+        fs_data[8] = (fs_data[8] | 0x02) if red_card else (fs_data[8] & ~0x02)
+        fs_data[8] = (fs_data[8] | 0x08) if yellow_card else (fs_data[8] & ~0x08)
+        fs_data[6] = (fs_data[6] | 0x08) if priority else (fs_data[6] & ~0x08)
     else:  # name == "rightCards"
-        fs_cards = (fs_cards | 0x01) if red_card else (fs_cards & ~0x01)
-        fs_cards = (fs_cards | 0x04) if yellow_card else (fs_cards & ~0x04)
-
-    # Update fs_period (Number of Matches and Priority Signals)
-    fs_period = (fs_period | 0x04) if right_priority else (fs_period & ~0x04)  # Right Priority
-    fs_period = (fs_period | 0x08) if left_priority else (fs_period & ~0x08)   # Left Priority
+        fs_data[8] = (fs_data[8] | 0x01) if red_card else (fs_data[8] & ~0x01)
+        fs_data[8] = (fs_data[8] | 0x04) if yellow_card else (fs_data[8] & ~0x04)
+        fs_data[6] = (fs_data[6] | 0x04) if priority else (fs_data[6] & ~0x04)
 
     # Debugging: Log updated values
-    logging.info(f"Updated fs_cards: {hex(fs_cards)}, Updated fs_period: {hex(fs_period)}")
+    logging.info(f"Updated: fs_data[8]: {hex(fs_data[8])}, fs_data[6]: {hex(fs_data[6])} (binary: {bin(fs_data[6])})")
 
-    return f"Yellow: {yellow_status} / Red: {red_status} / P-Card: {p_card_status} / Priority: {priority_status}", fs_cards, fs_period
+    return f"Yellow: {yellow_status} / Red: {red_status} / P-Card: {p_card_status} / Priority: {priority_status}"
 
 # General BLE Notification Handler
 async def handle_notification(sender, data):
