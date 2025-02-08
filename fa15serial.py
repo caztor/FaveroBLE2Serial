@@ -19,10 +19,7 @@ UUIDS = {
     "weapon": "6F000006-B5A3-F393-E0A9-E50E24DCCA9E",
     "leftScore": "6F000007-B5A3-F393-E0A9-E50E24DCCA9E",
     "rightScore": "6F000008-B5A3-F393-E0A9-E50E24DCCA9E",
-    "lamp": "6F000009-B5A3-F393-E0A9-E50E24DCCA9E",
-    "modelNumber":  "2A24",
-    "firmwareRevision": "2A26",
-    "softwareRevision": "2A28"
+    "lamp": "6F000009-B5A3-F393-E0A9-E50E24DCCA9E"
 }
 
 # Reverse UUID mapping for lookup
@@ -36,16 +33,15 @@ TIME_PHASES = {
     0x00: "Stopped"
 }
 
-# Global variables to store hex value of data to be transmitted via serial interface
-fs_stime = 0  # Seconds of the time (units and tens)
-fs_mtime = 0  # Minutes of the time (only units)
-fs_lamps = 0  # Define the state of the lamps (red, green, whites, and yellows)
+# Global variable to store hex value of data to be transmitted via serial interface
+
 fs_period = 0  # Number of matches and Priorite signals
 fs_cards = 0  # Red and Yellow penalty cards
-fs_data = bytearray(9)  # Initialize the serial data to send
+fs_data = bytearray(10)  # Initialize the serial data to send
+fs_data[0] = 255  # Data Constant
 
 # Convert an integer (0-99) to a BCD-encoded bytearray
-def int_to_bcd(value: int) -> str:
+def int_to_bcd(value: int) -> bytearray:
     if not (0 <= value <= 99):  # BCD only supports two-digit numbers (0-99)
         raise ValueError("Input must be between 0 and 99")
 
@@ -82,31 +78,30 @@ def interpret_scores(data: bytearray, name: str) -> int:
 
 # Period interpretation
 def interpret_period(data: bytearray) -> str:
-    global fs_period
+    global fs_data
     
     if not isinstance(data, bytearray) or len(data) != 1:
         logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
         return "Invalid Period Data"
     
     period_number = data[0]
-    fs_period = period_number  # Update global variable with hex value
     
     # Extract match number and priority signals
-    num_matches = period_number & 0x03  # D0 and D1 define the number of matches
+    fs_data[6] = period_number & 0x03  # D0 and D1 define the number of matches
     
     # Interpret the period/match value
     if period_number == 0x00:
         period_status = "No Period/Match '-'"
     elif 0x01 <= period_number <= 0x09:
-        period_status = f"Period/Match No {num_matches}"
+        period_status = f"Period/Match No {period_number}"
     elif period_number == 0x0A:
         period_status = "Error"
     else:
         period_status = f"Unknown Period Value ({period_number})"
       
-    logging.info(f"Updated fs_period: {hex(fs_period)}")
+    logging.info(f"Updated fs_data[6]: {hex(fs_data[6])}")
     
-    return f"{period_status} ({priority_output})"
+    return f"{period_status}"
 
 # Time interpretation
 def interpret_time(data: bytearray) -> str:
@@ -131,7 +126,7 @@ def interpret_time(data: bytearray) -> str:
     # Time format: MM:SS:XX (Phase)
     time_display = f"{minutes}:{seconds:02d}:{hundreds:02d}"
     
-    logging.info(f"Updated fs_stime: {hex(fs_stime)}, fs_mtime: {hex(fs_mtime)}")
+    logging.info(f"Updated fs_data[3]: {hex(fs_data[3])}, fs_data[4]: {hex(fs_data[4])}")
     
     return f"{time_display} ({phase_status})"
 
@@ -156,13 +151,12 @@ def interpret_weapons(data: bytearray) -> str:
 
 # Lamp interpretation
 def interpret_lamps(data: bytearray) -> str:
-    global fs_lamps
-    
+    global fs_data
     if not isinstance(data, bytearray) or len(data) != 2:
         logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
         raise ValueError(f"Invalid input data. Must be a bytearray of length 2, received: {repr(data)}")
     
-    # Reset fs_lamps before updating
+    # Reset lamps before updating
     fs_data[5] = 0x00
     
     if data[0] & 0x04:
@@ -178,20 +172,19 @@ def interpret_lamps(data: bytearray) -> str:
     if data[0] & 0x10:
         fs_data[5] |= 0x20  # Left Yellow Lamp
     
-    logging.info(f"Updated fs_lamps: {hex(fs_lamps)}")
+    logging.info(f"Updated fs_data[5]: {hex(fs_data[5])}")
     
     return (
-        f"LEFT - Score: {'ON' if fs_lamps & 0x04 else 'OFF'} / "
-        f"White: {'ON' if fs_lamps & 0x01 else 'OFF'} / "
-        f"Yellow: {'ON' if fs_lamps & 0x20 else 'OFF'}\n"
-        f"RIGHT - Score: {'ON' if fs_lamps & 0x08 else 'OFF'} / "
-        f"White: {'ON' if fs_lamps & 0x02 else 'OFF'} / "
-        f"Yellow: {'ON' if fs_lamps & 0x10 else 'OFF'}"
+        f"LEFT - Score: {'ON' if fs_data[5] & 0x04 else 'OFF'} / "
+        f"White: {'ON' if fs_data[5] & 0x01 else 'OFF'} / "
+        f"Yellow: {'ON' if fs_data[5] & 0x20 else 'OFF'}\n"
+        f"RIGHT - Score: {'ON' if fs_data[5] & 0x08 else 'OFF'} / "
+        f"White: {'ON' if fs_data[5] & 0x02 else 'OFF'} / "
+        f"Yellow: {'ON' if fs_data[5] & 0x10 else 'OFF'}"
     )
 
-# Cards interpretation (Left & Right)
-def interpret_cards(data: bytearray, name: str, fs_cards: int, fs_period: int) -> tuple[str, int, int]:
-    """Interpret fencing cards and priority from a bytearray and update fs_cards and fs_period."""
+# Interpret fencing cards and priority from a bytearray and update fs_data
+def interpret_cards(data: bytearray, name: str) -> int:
 
     # Debugging: Log the raw input received
     logging.info(f"Received input - data: {repr(data)}, name: {repr(name)}")
@@ -264,7 +257,7 @@ async def handle_notification(sender, data):
     elif characteristic_name in ["leftScore", "rightScore"]:
         readable_data = interpret_scores(data, characteristic_name)
     elif characteristic_name in ["leftCards", "rightCards"]:
-        readable_data = interpret_cards(data, characteristic_name, fs_cards, fs_period)
+        readable_data = interpret_cards(data, characteristic_name)
     elif characteristic_name == "period":
         readable_data = interpret_period(data)
     elif characteristic_name == "weapon":
@@ -274,19 +267,17 @@ async def handle_notification(sender, data):
 
     print(f"[{timestamp}] 🔵 BLE Notification from {characteristic_name} ({sender_uuid}): {readable_data} | Raw: {data.hex()}")
 
-# Read initial values
+# Reads current values from all subscribed characteristics upon connection
 async def read_initial_values(client):
-    """Reads current values from all subscribed characteristics upon connection."""
     print("📥 Reading initial values...")
     for name, uuid in UUIDS.items():
         try:
             data = await client.read_gatt_char(uuid)
             readable_data = (
-                data.decode('utf-8') if name in ["modelNumber", "firmwareRevision", "softwareRevision"] else
                 interpret_time(data) if name == "time" else
                 interpret_lamps(data) if name == "lamp" else
                 interpret_scores(data, name) if name in ["leftScore", "rightScore"] else
-                interpret_cards(data, name, fs_cards, fs_period) if name in ["leftCards", "rightCards"] else
+                interpret_cards(data, name) if name in ["leftCards", "rightCards"] else
                 interpret_period(data) if name == "period" else
                 interpret_weapons(data) if name == "weapon" else
                 data.hex()
@@ -299,7 +290,17 @@ async def read_initial_values(client):
 async def subscribe_to_fa15(device_address):
     """Connects to the FA-15 device, reads initial values, and subscribes to notifications."""
     async with BleakClient(device_address) as client:
-        print(f"🔗 Connected to FA-15 at {device_address}")
+
+        favero_modelNumber = await client.read_gatt_char("2A24")
+        favero_firmwareRevision = await client.read_gatt_char("2A26")
+        favero_softwareRevision = await client.read_gatt_char("2A28")
+
+        favero_modelNumber = favero_modelNumber.decode('utf-8')
+        favero_firmwareRevision = favero_firmwareRevision.decode('utf-8')
+        favero_softwareRevision = favero_softwareRevision.decode('utf-8')
+
+        print(f"🔗 Connected to {favero_modelNumber} (FW: {favero_firmwareRevision} SW: {favero_softwareRevision}) at {device_address}")
+
         await read_initial_values(client)
 
         for name, uuid in UUIDS.items():
@@ -314,25 +315,26 @@ async def subscribe_to_fa15(device_address):
             await asyncio.sleep(1)
 
 # Generate a 10-byte string mimicking the real serial data format, including checksum
-def generate_10_byte_string():
-    global fs_data
+def generate_10_byte_string(data: bytearray):
 
-    fs_data[0] = 255 % 256  # Data Constant
+    # Ensure data is a valid bytearray with length 1
+    if not isinstance(data, bytearray) or len(data) != 10:
+        logging.error(f"Invalid input data. Received: {repr(data)} (Type: {type(data)})")
+        raise ValueError(f"Invalid input data. Must be a bytearray of length 10, received: {repr(data)}")
+
     # fs_data[5] = fs_ % 256  # Lamps
     # fs_data[6] = fs_ % 256  # Period
-    fs_data[7] = 0 % 256  # Reserved byte
     # fs_data[8] = fs_ % 256  # Cards
 
-    checksum = sum(fs_data) % 256
-    serial_data = fs_data[:]
-    serial_data.append(checksum)
+    data[9] = sum(data[:9]) % 256
 
-    return serial_data
+    return data
 
 # Send formatted data over serial or print for debugging
 def send_favero_data(ser):
+    global fs_data
     while True:
-        byte_string = generate_10_byte_string()
+        byte_string = generate_10_byte_string(fs_data)
         if ser:
             ser.write(byte_string)
             print(f"Sent: {byte_string.hex()}")
@@ -340,8 +342,8 @@ def send_favero_data(ser):
             print(f"Debug Output: {byte_string.hex()}")
         time.sleep(1)
 
+# List available COM ports, indicate status, and allow user selection
 def list_com_ports():
-    """List available COM ports, indicate status, and allow user selection."""
     ports = list(serial.tools.list_ports.comports())
     if not ports:
         print("No COM ports found.")
@@ -366,9 +368,8 @@ def list_com_ports():
         else:
             print("Invalid selection. Please try again.")
 
-# Scan for FA-15 devices
+# Scans for FA-15 devices and allows the user to select one
 async def scan_for_fa15():
-    """Scans for FA-15 devices and allows the user to select one."""
     while True:
         print("🔍 Scanning for BLE devices...")
         devices = await BleakScanner.discover()
